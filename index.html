@@ -37,13 +37,14 @@
     .control-group { display: flex; align-items: center; gap: 6px; background: var(--bg); padding: 6px 10px; border-radius: 8px; border: 1px solid var(--border); }
     label { font-size: 12px; color: var(--muted); font-weight: 600; }
     input[type="date"] { background: transparent; border: none; color: var(--text); font-size: 13px; font-weight: 700; outline: none; color-scheme: dark; }
-    button {
+    button, .btn-file {
       background: var(--panel-2); color: var(--text); border: 1px solid var(--border);
       padding: 7px 13px; border-radius: 7px; font-size: 12.5px; font-weight: 600; cursor: pointer; transition: 0.15s;
+      display: inline-flex; align-items: center; justify-content: center;
     }
-    button:hover { background: #334155; }
-    button.primary { background: var(--primary); border-color: var(--primary); color: #fff; }
-    button.primary:hover { background: var(--primary-hover); }
+    button:hover, .btn-file:hover { background: #334155; }
+    button.primary, .btn-file.primary { background: var(--primary); border-color: var(--primary); color: #fff; }
+    button.primary:hover, .btn-file.primary:hover { background: var(--primary-hover); }
     button.danger { background: var(--danger); border-color: var(--danger); color: #fff; }
     button.active-tool { background: var(--warn); color: #000; border-color: var(--warn); }
     button:disabled { opacity: 0.45; cursor: not-allowed; }
@@ -120,7 +121,10 @@
       <span class="badge-offline">100% OFFLINE LOCAL ENGINE</span>
     </div>
     <div class="controls">
-      <button class="primary" onclick="openPdfDialog()">+ PDF 파일 추가</button>
+      <!-- 네이티브 HTML 파일 선택기 직접 연결 -->
+      <label class="btn-file primary" for="pdfFileInput">+ PDF 파일 추가</label>
+      <input type="file" id="pdfFileInput" accept=".pdf,application/pdf" multiple style="display:none;" onchange="handleFileInput(this.files)" />
+
       <div class="control-group">
         <label for="cutoffDate">승인 기준일:</label>
         <input type="date" id="cutoffDate" value="2026-11-05" onchange="rescanAll()" />
@@ -143,7 +147,7 @@
       </div>
       <div class="scroll-area" id="docList">
         <div class="empty-state">
-          <div>상단 <b>[+ PDF 파일 추가]</b>를 클릭하거나<br/>PDF 파일을 창으로 드래그하세요.</div>
+          <div>상단 <b>[+ PDF 파일 추가]</b>를 클릭하거나<br/>PDF 파일을 이 화면에 끌어다 놓으세요.</div>
         </div>
       </div>
     </section>
@@ -175,8 +179,8 @@
   </main>
 
   <div id="statusBar">
-    <span id="statusText">준비 완료 (로컬 엔진 대기 중)</span>
-    <span id="ocrBadge">OCR 엔진 확인 중...</span>
+    <span id="statusText">로컬 엔진 초기화 중...</span>
+    <span id="ocrBadge">브릿지 확인 중...</span>
   </div>
 
   <script>
@@ -190,54 +194,103 @@
       drawStart: null
     };
 
-    function setStatus(msg) {
-      document.getElementById('statusText').textContent = msg;
+    function setStatus(msg, isError = false) {
+      const el = document.getElementById('statusText');
+      el.textContent = msg;
+      el.style.color = isError ? '#ef4444' : '#94a3b8';
     }
 
-    async function openPdfDialog() {
-      setStatus('파일 선택 창을 여는 중...');
-      const added = await window.pywebview.api.select_files();
-      if (!added || added.length === 0) {
-        setStatus('파일 선택이 취소되었습니다.');
+    async function waitForApi(timeoutMs = 8000) {
+      const start = Date.now();
+      while (Date.now() - start < timeoutMs) {
+        if (window.pywebview && window.pywebview.api) {
+          return window.pywebview.api;
+        }
+        await new Promise(r => setTimeout(r, 100));
+      }
+      throw new Error('백엔드 엔진(pywebview) 연결 시간 초과');
+    }
+
+    window.addEventListener('pywebviewready', async () => {
+      try {
+        const api = await waitForApi();
+        const info = await api.ping();
+        document.getElementById('ocrBadge').textContent = info.hasOcr ? 'RapidOCR 엔진 활성' : '텍스트 전용 모드';
+        setStatus('준비 완료 — PDF 파일을 추가해 주세요.');
+      } catch (e) {
+        setStatus('초기화 오류: ' + e.message, true);
+      }
+    });
+
+    async function handleFileInput(fileList) {
+      const files = Array.from(fileList || []).filter(f => f.name.toLowerCase().endsWith('.pdf'));
+      document.getElementById('pdfFileInput').value = '';
+      if (files.length === 0) {
+        setStatus('PDF 파일만 선택할 수 있습니다.', true);
         return;
       }
-      await processAddedDocs(added);
+      await ingestFiles(files);
     }
 
-    async function processAddedDocs(addedList) {
-      const cutoff = document.getElementById('cutoffDate').value;
-      const useOcr = document.getElementById('useOcr').checked;
+    async function ingestFiles(files) {
+      try {
+        const api = await waitForApi();
+        const cutoff = document.getElementById('cutoffDate').value;
+        const useOcr = document.getElementById('useOcr').checked;
 
-      for (const item of addedList) {
-        document.getElementById('ocrBadge').textContent = item.hasOcr ? 'RapidOCR 엔진 활성' : '텍스트 전용 모드';
-        setStatus(`분석 중: ${item.name} (총 ${item.pageCount}페이지)...`);
-        const scanRes = await window.pywebview.api.scan_document(item.id, cutoff, useOcr);
-        state.docs.push({
-          ...item,
-          findings: scanRes.findings || []
-        });
-      }
+        for (const f of files) {
+          setStatus(`파일 읽는 중: ${f.name}...`);
+          const b64 = await fileToBase64(f);
+          const meta = await api.load_dropped_file(f.name, b64);
+          if (meta.error) {
+            setStatus(`로드 오류 (${f.name}): ${meta.error}`, true);
+            continue;
+          }
 
-      if (!state.selectedDocId && state.docs.length > 0) {
-        state.selectedDocId = state.docs[0].id;
-        state.currentPage = 1;
+          document.getElementById('ocrBadge').textContent = meta.hasOcr ? 'RapidOCR 엔진 활성' : '텍스트 전용 모드';
+          setStatus(`정밀 스캔 중: ${meta.name} (총 ${meta.pageCount}페이지)...`);
+          const scanRes = await api.scan_document(meta.id, cutoff, useOcr);
+          if (scanRes.error) {
+            setStatus(`스캔 오류 (${meta.name}): ${scanRes.error}`, true);
+            continue;
+          }
+
+          state.docs.push({
+            ...meta,
+            findings: scanRes.findings || []
+          });
+        }
+
+        if (!state.selectedDocId && state.docs.length > 0) {
+          state.selectedDocId = state.docs[0].id;
+          const firstActive = state.docs[0].findings.find(x => !x.excluded);
+          state.currentPage = firstActive ? firstActive.page : 1;
+          state.selectedFindingId = firstActive ? firstActive.id : null;
+        }
+        renderAll();
+        setStatus(`총 ${state.docs.length}개 문서 분석 완료`);
+      } catch (err) {
+        setStatus('오류 발생: ' + err.message, true);
       }
-      renderAll();
-      setStatus(`총 ${state.docs.length}개 문서 분석 완료`);
     }
 
     async function rescanAll() {
       if (state.docs.length === 0) return;
-      const cutoff = document.getElementById('cutoffDate').value;
-      const useOcr = document.getElementById('useOcr').checked;
+      try {
+        const api = await waitForApi();
+        const cutoff = document.getElementById('cutoffDate').value;
+        const useOcr = document.getElementById('useOcr').checked;
 
-      for (const doc of state.docs) {
-        setStatus(`재검사 중: ${doc.name}...`);
-        const scanRes = await window.pywebview.api.scan_document(doc.id, cutoff, useOcr);
-        doc.findings = scanRes.findings || [];
+        for (const doc of state.docs) {
+          setStatus(`재검사 중: ${doc.name}...`);
+          const scanRes = await api.scan_document(doc.id, cutoff, useOcr);
+          doc.findings = scanRes.findings || [];
+        }
+        renderAll();
+        setStatus(`기준일(${cutoff}) 기준 전체 재검사 완료`);
+      } catch (err) {
+        setStatus('재검사 오류: ' + err.message, true);
       }
-      renderAll();
-      setStatus(`기준일(${cutoff}) 기준 전체 재검사 완료`);
     }
 
     function getCurrentDoc() {
@@ -358,7 +411,8 @@
       document.getElementById('btnPrevPage').disabled = state.currentPage <= 1;
       document.getElementById('btnNextPage').disabled = state.currentPage >= doc.pageCount;
 
-      const rendered = await window.pywebview.api.render_page_image(doc.id, state.currentPage, 1.55);
+      const api = await waitForApi();
+      const rendered = await api.render_page_image(doc.id, state.currentPage, 1.55);
       if (rendered.error) return;
 
       const stage = document.createElement('div');
@@ -473,36 +527,58 @@
     async function exportCurrentPdf() {
       const doc = getCurrentDoc();
       if (!doc) return;
+      const api = await waitForApi();
       const cutoff = document.getElementById('cutoffDate').value;
       setStatus('마킹 PDF 생성 중...');
-      const res = await window.pywebview.api.export_single_pdf(doc.id, JSON.stringify(doc.findings), cutoff);
-      setStatus(res.ok ? `저장 완료: ${res.path}` : res.msg);
+      const res = await api.export_single_pdf(doc.id, JSON.stringify(doc.findings), cutoff);
+      if (res.ok && res.b64) {
+        triggerBrowserDownload(res.b64, res.filename, 'application/pdf');
+        setStatus(`저장 완료: ${res.filename}`);
+      } else {
+        setStatus(res.msg || '저장 실패', true);
+      }
     }
 
     async function exportAllZip() {
       if (state.docs.length === 0) return;
+      const api = await waitForApi();
       const cutoff = document.getElementById('cutoffDate').value;
       const map = {};
       for (const d of state.docs) map[d.id] = d.findings;
       setStatus('전체 문서 일괄 마킹 및 ZIP 압축 중...');
-      const res = await window.pywebview.api.export_all_zip(JSON.stringify(map), cutoff);
-      setStatus(res.ok ? `일괄 저장 완료: ${res.path}` : res.msg);
+      const res = await api.export_all_zip(JSON.stringify(map), cutoff);
+      if (res.ok && res.b64) {
+        triggerBrowserDownload(res.b64, res.filename, 'application/zip');
+        setStatus(`일괄 저장 완료: ${res.filename}`);
+      } else {
+        setStatus(res.msg || '일괄 저장 실패', true);
+      }
     }
 
-    document.body.addEventListener('dragover', e => e.preventDefault());
-    document.body.addEventListener('drop', async e => {
+    function triggerBrowserDownload(b64, filename, mime) {
+      const bin = atob(b64);
+      const bytes = new Uint8Array(bin.length);
+      for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
+      const blob = new Blob([bytes], { type: mime });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = filename;
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+      setTimeout(() => URL.revokeObjectURL(url), 5000);
+    }
+
+    // 창 전체 드래그 앤 드롭 차단 해제 및 파일 수신
+    window.addEventListener('dragover', e => { e.preventDefault(); e.stopPropagation(); }, true);
+    window.addEventListener('drop', async e => {
       e.preventDefault();
-      const files = Array.from(e.dataTransfer.files || []).filter(f => f.name.toLowerCase().endsWith('.pdf'));
+      e.stopPropagation();
+      const files = Array.from(e.dataTransfer?.files || []).filter(f => f.name.toLowerCase().endsWith('.pdf'));
       if (files.length === 0) return;
-      const added = [];
-      for (const f of files) {
-        setStatus(`파일 읽는 중: ${f.name}...`);
-        const b64 = await fileToBase64(f);
-        const meta = await window.pywebview.api.load_dropped_file(f.name, b64);
-        added.push(meta);
-      }
-      await processAddedDocs(added);
-    });
+      await ingestFiles(files);
+    }, true);
 
     function fileToBase64(file) {
       return new Promise((resolve, reject) => {
