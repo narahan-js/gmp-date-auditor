@@ -45,7 +45,6 @@ def resolve_year(y_str: str) -> int:
 
 
 def normalize_ocr_digits(text: str) -> str:
-    # 도장/스캔 OCR에서 숫자 0이 O/o/Q로 오인식되는 케이스 보정
     text = re.sub(r'(?<![A-Za-z])[OoQ](?=\d)', '0', text)
     text = re.sub(r'(?<=\d)[OoQ](?![A-Za-z])', '0', text)
     return text
@@ -114,25 +113,42 @@ def extract_dates_from_text(raw_text: str):
     return results
 
 
+def _get_dialog_type(kind: str):
+    # pywebview 구버전(OPEN_DIALOG)과 신버전(FileDialog.OPEN) 모두 호환 처리
+    if hasattr(webview, 'FileDialog'):
+        return webview.FileDialog.OPEN if kind == 'open' else webview.FileDialog.SAVE
+    return webview.OPEN_DIALOG if kind == 'open' else webview.SAVE_DIALOG
+
+
 class AuditorAPI:
     def __init__(self):
         self.work_dir = tempfile.mkdtemp(prefix="gmp_auditor_")
         self.docs = {}
 
     def select_files(self):
-        window = webview.windows[0]
-        file_types = ('PDF Files (*.pdf)', 'All files (*.*)')
-        paths = window.create_file_dialog(webview.OPEN_DIALOG, allow_multiple=True, file_types=file_types)
-        if not paths:
-            return []
-        return [self._register_pdf(p) for p in paths]
+        try:
+            window = webview.windows[0]
+            file_types = ('PDF Files (*.pdf)', 'All files (*.*)')
+            paths = window.create_file_dialog(
+                _get_dialog_type('open'),
+                allow_multiple=True,
+                file_types=file_types
+            )
+            if not paths:
+                return []
+            return [self._register_pdf(p) for p in paths]
+        except Exception as e:
+            return {'error': str(e)}
 
     def load_dropped_file(self, filename: str, b64_data: str):
-        safe_name = os.path.basename(filename)
-        dest = os.path.join(self.work_dir, f"{len(self.docs)+1}_{safe_name}")
-        with open(dest, "wb") as f:
-            f.write(base64.b64decode(b64_data))
-        return self._register_pdf(dest, display_name=safe_name)
+        try:
+            safe_name = os.path.basename(filename)
+            dest = os.path.join(self.work_dir, f"{len(self.docs)+1}_{safe_name}")
+            with open(dest, "wb") as f:
+                f.write(base64.b64decode(b64_data))
+            return self._register_pdf(dest, display_name=safe_name)
+        except Exception as e:
+            return {'error': str(e)}
 
     def _register_pdf(self, filepath: str, display_name: str = None):
         doc_id = f"doc_{len(self.docs)+1}_{int(datetime.now().timestamp()*1000)}"
@@ -327,7 +343,7 @@ class AuditorAPI:
         orig_name = Path(self.docs[doc_id]['name']).stem
         window = webview.windows[0]
         save_path = window.create_file_dialog(
-            webview.SAVE_DIALOG,
+            _get_dialog_type('save'),
             save_filename=f"[DATE_AUDIT]_{orig_name}.pdf",
             file_types=('PDF Files (*.pdf)',)
         )
@@ -343,7 +359,7 @@ class AuditorAPI:
         all_map = json.loads(all_findings_json)
         window = webview.windows[0]
         save_path = window.create_file_dialog(
-            webview.SAVE_DIALOG,
+            _get_dialog_type('save'),
             save_filename=f"GMP_Date_Audit_Report_{cutoff_date}.zip",
             file_types=('ZIP Archive (*.zip)',)
         )
