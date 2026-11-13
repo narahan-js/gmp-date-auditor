@@ -1,0 +1,521 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+  <meta charset="UTF-8" />
+  <title>GMP Document Date Auditor</title>
+  <style>
+    :root {
+      --bg: #0f172a;
+      --panel: #1e293b;
+      --panel-2: #273549;
+      --border: #334155;
+      --text: #f1f5f9;
+      --muted: #94a3b8;
+      --primary: #3b82f6;
+      --primary-hover: #2563eb;
+      --danger: #ef4444;
+      --danger-bg: rgba(239, 68, 68, 0.16);
+      --ok: #10b981;
+      --ok-bg: rgba(16, 185, 129, 0.16);
+      --warn: #f59e0b;
+    }
+    * { box-sizing: border-box; margin: 0; padding: 0; font-family: 'Malgun Gothic', 'Segoe UI', sans-serif; }
+    body { background: var(--bg); color: var(--text); height: 100vh; display: flex; flex-direction: column; overflow: hidden; user-select: none; }
+
+    header {
+      background: var(--panel);
+      border-bottom: 1px solid var(--border);
+      padding: 12px 20px;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 14px;
+    }
+    .brand { display: flex; align-items: center; gap: 10px; }
+    .badge-offline { background: var(--ok-bg); color: var(--ok); border: 1px solid var(--ok); font-size: 11px; padding: 2px 8px; border-radius: 999px; font-weight: 700; }
+    .controls { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+    .control-group { display: flex; align-items: center; gap: 6px; background: var(--bg); padding: 6px 10px; border-radius: 8px; border: 1px solid var(--border); }
+    label { font-size: 12px; color: var(--muted); font-weight: 600; }
+    input[type="date"] { background: transparent; border: none; color: var(--text); font-size: 13px; font-weight: 700; outline: none; color-scheme: dark; }
+    button {
+      background: var(--panel-2); color: var(--text); border: 1px solid var(--border);
+      padding: 7px 13px; border-radius: 7px; font-size: 12.5px; font-weight: 600; cursor: pointer; transition: 0.15s;
+    }
+    button:hover { background: #334155; }
+    button.primary { background: var(--primary); border-color: var(--primary); color: #fff; }
+    button.primary:hover { background: var(--primary-hover); }
+    button.danger { background: var(--danger); border-color: var(--danger); color: #fff; }
+    button.active-tool { background: var(--warn); color: #000; border-color: var(--warn); }
+    button:disabled { opacity: 0.45; cursor: not-allowed; }
+
+    main { flex: 1; display: grid; grid-template-columns: 280px 330px 1fr; overflow: hidden; }
+    .pane { border-right: 1px solid var(--border); display: flex; flex-direction: column; overflow: hidden; background: var(--panel); }
+    .pane:last-child { border-right: none; background: #0b1120; }
+    .pane-header { padding: 11px 14px; border-bottom: 1px solid var(--border); font-size: 13px; font-weight: 700; display: flex; justify-content: space-between; align-items: center; background: rgba(15,23,42,0.45); }
+    .scroll-area { flex: 1; overflow-y: auto; padding: 10px; }
+
+    .doc-item {
+      padding: 10px 12px; border-radius: 8px; border: 1px solid var(--border); background: var(--bg);
+      margin-bottom: 8px; cursor: pointer; transition: 0.15s;
+    }
+    .doc-item:hover { border-color: var(--primary); }
+    .doc-item.selected { border-color: var(--primary); background: rgba(59,130,246,0.14); }
+    .doc-title { font-size: 12.5px; font-weight: 700; word-break: break-all; margin-bottom: 6px; line-height: 1.35; }
+    .doc-meta { display: flex; justify-content: space-between; align-items: center; font-size: 11.5px; color: var(--muted); }
+    .pill { padding: 2px 8px; border-radius: 999px; font-weight: 700; font-size: 11px; }
+    .pill.crit { background: var(--danger-bg); color: var(--danger); border: 1px solid rgba(239,68,68,0.4); }
+    .pill.pass { background: var(--ok-bg); color: var(--ok); border: 1px solid rgba(16,185,129,0.4); }
+
+    .finding-item {
+      padding: 10px; border-radius: 8px; border: 1px solid var(--border); background: var(--bg);
+      margin-bottom: 8px; cursor: pointer;
+    }
+    .finding-item.excluded { opacity: 0.48; border-style: dashed; }
+    .finding-item.active-finding { border-color: var(--warn); box-shadow: 0 0 0 1px var(--warn); }
+    .finding-top { display: flex; justify-content: space-between; align-items: center; margin-bottom: 4px; }
+    .tag-src { font-size: 10px; padding: 1px 6px; border-radius: 4px; background: #334155; color: #e2e8f0; font-weight: 700; }
+    .tag-src.ocr { background: rgba(245,158,11,0.2); color: var(--warn); }
+    .finding-date { font-size: 14px; font-weight: 800; color: var(--danger); }
+    .finding-raw { font-size: 11.5px; color: var(--muted); margin-bottom: 6px; }
+
+    .viewer-toolbar {
+      padding: 8px 14px; background: var(--panel); border-bottom: 1px solid var(--border);
+      display: flex; justify-content: space-between; align-items: center; font-size: 12.5px;
+    }
+    .canvas-wrap {
+      flex: 1; overflow: auto; display: flex; justify-content: center; align-items: flex-start; padding: 24px; position: relative;
+    }
+    .page-stage { position: relative; box-shadow: 0 12px 32px rgba(0,0,0,0.6); background: #fff; }
+    .page-stage img { display: block; max-width: none; pointer-events: none; }
+    .hl-box {
+      position: absolute;
+      border: 2px solid #ef4444;
+      background: rgba(250, 204, 21, 0.36);
+      cursor: pointer;
+      transition: 0.1s;
+    }
+    .hl-box.selected { border: 3px solid #dc2626; background: rgba(239, 68, 68, 0.32); z-index: 10; }
+    .hl-box.excluded { border: 1.5px dashed #94a3b8; background: rgba(148, 163, 184, 0.15); }
+    .hl-label {
+      position: absolute; top: -20px; left: -2px; background: #dc2626; color: #fff;
+      font-size: 10px; font-weight: 700; padding: 1px 5px; border-radius: 3px; white-space: nowrap;
+    }
+    .draw-box {
+      position: absolute; border: 2px dashed #f59e0b; background: rgba(245, 158, 11, 0.25); pointer-events: none; z-index: 20;
+    }
+    .empty-state {
+      height: 100%; display: flex; flex-direction: column; align-items: center; justify-content: center;
+      color: var(--muted); text-align: center; gap: 10px; padding: 20px;
+    }
+    #statusBar {
+      background: var(--panel); border-top: 1px solid var(--border); padding: 6px 16px;
+      font-size: 12px; color: var(--muted); display: flex; justify-content: space-between;
+    }
+  </style>
+</head>
+<body>
+  <header>
+    <div class="brand">
+      <strong style="font-size:15px;">GMP Document Date Auditor</strong>
+      <span class="badge-offline">100% OFFLINE LOCAL ENGINE</span>
+    </div>
+    <div class="controls">
+      <button class="primary" onclick="openPdfDialog()">+ PDF 파일 추가</button>
+      <div class="control-group">
+        <label for="cutoffDate">승인 기준일:</label>
+        <input type="date" id="cutoffDate" value="2026-11-05" onchange="rescanAll()" />
+      </div>
+      <div class="control-group">
+        <input type="checkbox" id="useOcr" checked onchange="rescanAll()" />
+        <label for="useOcr" style="cursor:pointer;">이미지·도장 OCR 정밀 스캔</label>
+      </div>
+      <button onclick="rescanAll()">전체 재검사</button>
+      <button id="btnDrawMode" onclick="toggleDrawMode()">+ 수동 박스 추가</button>
+      <button onclick="exportCurrentPdf()" id="btnExportOne" disabled>현재 마킹 PDF 저장</button>
+      <button class="danger" onclick="exportAllZip()" id="btnExportZip" disabled>전체 일괄 저장 (ZIP)</button>
+    </div>
+  </header>
+
+  <main>
+    <section class="pane">
+      <div class="pane-header">
+        <span>검토 대상 PDF (<span id="docCount">0</span>)</span>
+      </div>
+      <div class="scroll-area" id="docList">
+        <div class="empty-state">
+          <div>상단 <b>[+ PDF 파일 추가]</b>를 클릭하거나<br/>PDF 파일을 창으로 드래그하세요.</div>
+        </div>
+      </div>
+    </section>
+
+    <section class="pane">
+      <div class="pane-header">
+        <span>기준일 이후 검출 (<span id="findingCount">0</span>)</span>
+      </div>
+      <div class="scroll-area" id="findingList">
+        <div class="empty-state">문서를 선택하면 검출 내역이 표시됩니다.</div>
+      </div>
+    </section>
+
+    <section class="pane">
+      <div class="viewer-toolbar">
+        <div style="display:flex; align-items:center; gap:8px;">
+          <button onclick="changePage(-1)" id="btnPrevPage" disabled>◀ 이전</button>
+          <span id="pageIndicator">0 / 0 페이지</span>
+          <button onclick="changePage(1)" id="btnNextPage" disabled>다음 ▶</button>
+        </div>
+        <div style="color:var(--muted); font-size:12px;" id="viewerHint">
+          하이라이트 박스를 클릭하면 제외/복원할 수 있습니다.
+        </div>
+      </div>
+      <div class="canvas-wrap" id="canvasWrap">
+        <div class="empty-state">좌측에서 PDF 문서를 선택해 주세요.</div>
+      </div>
+    </section>
+  </main>
+
+  <div id="statusBar">
+    <span id="statusText">준비 완료 (로컬 엔진 대기 중)</span>
+    <span id="ocrBadge">OCR 엔진 확인 중...</span>
+  </div>
+
+  <script>
+    const state = {
+      docs: [],
+      selectedDocId: null,
+      currentPage: 1,
+      selectedFindingId: null,
+      drawMode: false,
+      isDrawing: false,
+      drawStart: null
+    };
+
+    function setStatus(msg) {
+      document.getElementById('statusText').textContent = msg;
+    }
+
+    async function openPdfDialog() {
+      setStatus('파일 선택 창을 여는 중...');
+      const added = await window.pywebview.api.select_files();
+      if (!added || added.length === 0) {
+        setStatus('파일 선택이 취소되었습니다.');
+        return;
+      }
+      await processAddedDocs(added);
+    }
+
+    async function processAddedDocs(addedList) {
+      const cutoff = document.getElementById('cutoffDate').value;
+      const useOcr = document.getElementById('useOcr').checked;
+
+      for (const item of addedList) {
+        document.getElementById('ocrBadge').textContent = item.hasOcr ? 'RapidOCR 엔진 활성' : '텍스트 전용 모드';
+        setStatus(`분석 중: ${item.name} (총 ${item.pageCount}페이지)...`);
+        const scanRes = await window.pywebview.api.scan_document(item.id, cutoff, useOcr);
+        state.docs.push({
+          ...item,
+          findings: scanRes.findings || []
+        });
+      }
+
+      if (!state.selectedDocId && state.docs.length > 0) {
+        state.selectedDocId = state.docs[0].id;
+        state.currentPage = 1;
+      }
+      renderAll();
+      setStatus(`총 ${state.docs.length}개 문서 분석 완료`);
+    }
+
+    async function rescanAll() {
+      if (state.docs.length === 0) return;
+      const cutoff = document.getElementById('cutoffDate').value;
+      const useOcr = document.getElementById('useOcr').checked;
+
+      for (const doc of state.docs) {
+        setStatus(`재검사 중: ${doc.name}...`);
+        const scanRes = await window.pywebview.api.scan_document(doc.id, cutoff, useOcr);
+        doc.findings = scanRes.findings || [];
+      }
+      renderAll();
+      setStatus(`기준일(${cutoff}) 기준 전체 재검사 완료`);
+    }
+
+    function getCurrentDoc() {
+      return state.docs.find(d => d.id === state.selectedDocId) || null;
+    }
+
+    function renderAll() {
+      renderDocList();
+      renderFindingList();
+      renderPageViewer();
+      document.getElementById('btnExportOne').disabled = !getCurrentDoc();
+      document.getElementById('btnExportZip').disabled = state.docs.length === 0;
+    }
+
+    function renderDocList() {
+      const el = document.getElementById('docList');
+      document.getElementById('docCount').textContent = state.docs.length;
+      if (state.docs.length === 0) return;
+
+      el.innerHTML = state.docs.map(doc => {
+        const activeCnt = doc.findings.filter(f => !f.excluded).length;
+        const sel = doc.id === state.selectedDocId ? 'selected' : '';
+        const badge = activeCnt > 0
+          ? `<span class="pill crit">초과 ${activeCnt}건</span>`
+          : `<span class="pill pass">정상 (0건)</span>`;
+        return `
+          <div class="doc-item ${sel}" onclick="selectDoc('${doc.id}')">
+            <div class="doc-title">${escapeHtml(doc.name)}</div>
+            <div class="doc-meta">
+              <span>${doc.pageCount} Pages</span>
+              ${badge}
+            </div>
+          </div>
+        `;
+      }).join('');
+    }
+
+    function selectDoc(docId) {
+      state.selectedDocId = docId;
+      const doc = getCurrentDoc();
+      const firstActive = doc?.findings.find(f => !f.excluded);
+      state.currentPage = firstActive ? firstActive.page : 1;
+      state.selectedFindingId = firstActive ? firstActive.id : null;
+      renderAll();
+    }
+
+    function renderFindingList() {
+      const el = document.getElementById('findingList');
+      const doc = getCurrentDoc();
+      if (!doc) {
+        document.getElementById('findingCount').textContent = '0';
+        return;
+      }
+      const activeCnt = doc.findings.filter(f => !f.excluded).length;
+      document.getElementById('findingCount').textContent = `${activeCnt} / ${doc.findings.length}`;
+
+      if (doc.findings.length === 0) {
+        el.innerHTML = `<div class="empty-state" style="color:var(--ok);">기준일 이후 날짜가 검출되지 않았습니다.</div>`;
+        return;
+      }
+
+      el.innerHTML = doc.findings.map(f => {
+        const isSel = f.id === state.selectedFindingId ? 'active-finding' : '';
+        const isEx = f.excluded ? 'excluded' : '';
+        const srcCls = f.source === 'OCR' ? 'ocr' : '';
+        return `
+          <div class="finding-item ${isSel} ${isEx}" onclick="focusFinding('${f.id}')">
+            <div class="finding-top">
+              <span class="finding-date">${f.iso}</span>
+              <span class="tag-src ${srcCls}">${f.source} · P.${f.page}</span>
+            </div>
+            <div class="finding-raw">원문 표기: <b>${escapeHtml(f.raw)}</b></div>
+            <div style="display:flex; justify-content:flex-end;">
+              <button style="padding:3px 9px; font-size:11px;" onclick="event.stopPropagation(); toggleExclude('${f.id}')">
+                ${f.excluded ? '다시 포함' : '오탐 제외'}
+              </button>
+            </div>
+          </div>
+        `;
+      }).join('');
+    }
+
+    function focusFinding(fid) {
+      const doc = getCurrentDoc();
+      if (!doc) return;
+      const f = doc.findings.find(x => x.id === fid);
+      if (!f) return;
+      state.selectedFindingId = fid;
+      state.currentPage = f.page;
+      renderAll();
+    }
+
+    function toggleExclude(fid) {
+      const doc = getCurrentDoc();
+      if (!doc) return;
+      const f = doc.findings.find(x => x.id === fid);
+      if (!f) return;
+      f.excluded = !f.excluded;
+      renderAll();
+    }
+
+    function changePage(delta) {
+      const doc = getCurrentDoc();
+      if (!doc) return;
+      const next = state.currentPage + delta;
+      if (next >= 1 && next <= doc.pageCount) {
+        state.currentPage = next;
+        renderPageViewer();
+      }
+    }
+
+    async function renderPageViewer() {
+      const doc = getCurrentDoc();
+      const wrap = document.getElementById('canvasWrap');
+      if (!doc) return;
+
+      document.getElementById('pageIndicator').textContent = `${state.currentPage} / ${doc.pageCount} 페이지`;
+      document.getElementById('btnPrevPage').disabled = state.currentPage <= 1;
+      document.getElementById('btnNextPage').disabled = state.currentPage >= doc.pageCount;
+
+      const rendered = await window.pywebview.api.render_page_image(doc.id, state.currentPage, 1.55);
+      if (rendered.error) return;
+
+      const stage = document.createElement('div');
+      stage.className = 'page-stage';
+      stage.style.width = rendered.width + 'px';
+      stage.style.height = rendered.height + 'px';
+      stage.style.cursor = state.drawMode ? 'crosshair' : 'default';
+
+      const img = document.createElement('img');
+      img.src = rendered.dataUrl;
+      img.style.width = rendered.width + 'px';
+      img.style.height = rendered.height + 'px';
+      stage.appendChild(img);
+
+      const pageFindings = doc.findings.filter(f => f.page === state.currentPage);
+      for (const f of pageFindings) {
+        const box = document.createElement('div');
+        box.className = 'hl-box'
+          + (f.id === state.selectedFindingId ? ' selected' : '')
+          + (f.excluded ? ' excluded' : '');
+        box.style.left = (f.normRect.x * rendered.width) + 'px';
+        box.style.top = (f.normRect.y * rendered.height) + 'px';
+        box.style.width = Math.max(18, f.normRect.w * rendered.width) + 'px';
+        box.style.height = Math.max(14, f.normRect.h * rendered.height) + 'px';
+        box.title = `${f.raw} (${f.iso}) - 클릭하여 제외/복원`;
+
+        const lbl = document.createElement('div');
+        lbl.className = 'hl-label';
+        lbl.textContent = f.excluded ? `[제외] ${f.iso}` : `${f.iso}`;
+        box.appendChild(lbl);
+
+        box.onclick = (e) => {
+          e.stopPropagation();
+          toggleExclude(f.id);
+        };
+        stage.appendChild(box);
+      }
+
+      stage.onmousedown = (e) => {
+        if (!state.drawMode) return;
+        const rect = stage.getBoundingClientRect();
+        state.isDrawing = true;
+        state.drawStart = { x: e.clientX - rect.left, y: e.clientY - rect.top };
+        const draft = document.createElement('div');
+        draft.id = 'draftBox';
+        draft.className = 'draw-box';
+        draft.style.left = state.drawStart.x + 'px';
+        draft.style.top = state.drawStart.y + 'px';
+        stage.appendChild(draft);
+      };
+
+      stage.onmousemove = (e) => {
+        if (!state.isDrawing) return;
+        const draft = document.getElementById('draftBox');
+        if (!draft) return;
+        const rect = stage.getBoundingClientRect();
+        const curX = e.clientX - rect.left;
+        const curY = e.clientY - rect.top;
+        draft.style.left = Math.min(state.drawStart.x, curX) + 'px';
+        draft.style.top = Math.min(state.drawStart.y, curY) + 'px';
+        draft.style.width = Math.abs(curX - state.drawStart.x) + 'px';
+        draft.style.height = Math.abs(curY - state.drawStart.y) + 'px';
+      };
+
+      stage.onmouseup = (e) => {
+        if (!state.isDrawing) return;
+        state.isDrawing = false;
+        const draft = document.getElementById('draftBox');
+        if (draft) draft.remove();
+
+        const rect = stage.getBoundingClientRect();
+        const curX = e.clientX - rect.left;
+        const curY = e.clientY - rect.top;
+        const w = Math.abs(curX - state.drawStart.x);
+        const h = Math.abs(curY - state.drawStart.y);
+        if (w < 10 || h < 8) return;
+
+        const x0 = Math.min(state.drawStart.x, curX);
+        const y0 = Math.min(state.drawStart.y, curY);
+        const manualId = `${doc.id}_manual_${Date.now()}`;
+        doc.findings.push({
+          id: manualId,
+          page: state.currentPage,
+          raw: '수동 지정 영역',
+          iso: 'MANUAL',
+          source: 'MANUAL',
+          excluded: false,
+          normRect: {
+            x: x0 / rendered.width,
+            y: y0 / rendered.height,
+            w: w / rendered.width,
+            h: h / rendered.height
+          }
+        });
+        state.selectedFindingId = manualId;
+        toggleDrawMode(false);
+        renderAll();
+      };
+
+      wrap.innerHTML = '';
+      wrap.appendChild(stage);
+    }
+
+    function toggleDrawMode(forceVal) {
+      state.drawMode = typeof forceVal === 'boolean' ? forceVal : !state.drawMode;
+      const btn = document.getElementById('btnDrawMode');
+      btn.classList.toggle('active-tool', state.drawMode);
+      btn.textContent = state.drawMode ? '드래그로 영역 지정 중...' : '+ 수동 박스 추가';
+      renderPageViewer();
+    }
+
+    async function exportCurrentPdf() {
+      const doc = getCurrentDoc();
+      if (!doc) return;
+      const cutoff = document.getElementById('cutoffDate').value;
+      setStatus('마킹 PDF 생성 중...');
+      const res = await window.pywebview.api.export_single_pdf(doc.id, JSON.stringify(doc.findings), cutoff);
+      setStatus(res.ok ? `저장 완료: ${res.path}` : res.msg);
+    }
+
+    async function exportAllZip() {
+      if (state.docs.length === 0) return;
+      const cutoff = document.getElementById('cutoffDate').value;
+      const map = {};
+      for (const d of state.docs) map[d.id] = d.findings;
+      setStatus('전체 문서 일괄 마킹 및 ZIP 압축 중...');
+      const res = await window.pywebview.api.export_all_zip(JSON.stringify(map), cutoff);
+      setStatus(res.ok ? `일괄 저장 완료: ${res.path}` : res.msg);
+    }
+
+    document.body.addEventListener('dragover', e => e.preventDefault());
+    document.body.addEventListener('drop', async e => {
+      e.preventDefault();
+      const files = Array.from(e.dataTransfer.files || []).filter(f => f.name.toLowerCase().endsWith('.pdf'));
+      if (files.length === 0) return;
+      const added = [];
+      for (const f of files) {
+        setStatus(`파일 읽는 중: ${f.name}...`);
+        const b64 = await fileToBase64(f);
+        const meta = await window.pywebview.api.load_dropped_file(f.name, b64);
+        added.push(meta);
+      }
+      await processAddedDocs(added);
+    });
+
+    function fileToBase64(file) {
+      return new Promise((resolve, reject) => {
+        const reader = new FileReader();
+        reader.onload = () => resolve(reader.result.split(',')[1]);
+        reader.onerror = reject;
+        reader.readAsDataURL(file);
+      });
+    }
+
+    function escapeHtml(str) {
+      return String(str).replace(/[&<>"']/g, s => ({'&':'&','<':'<','>':'>','"':'"',"'":'''}[s]));
+    }
+  </script>
+</body>
+</html>
