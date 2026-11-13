@@ -12,7 +12,6 @@ from pathlib import Path
 import fitz  # PyMuPDF
 import webview
 
-# RapidOCR (오프라인 내장형 고속 OCR 엔진)
 try:
     from rapidocr_onnxruntime import RapidOCR
     ocr_engine = RapidOCR()
@@ -113,32 +112,13 @@ def extract_dates_from_text(raw_text: str):
     return results
 
 
-def _get_dialog_type(kind: str):
-    # pywebview 구버전(OPEN_DIALOG)과 신버전(FileDialog.OPEN) 모두 호환 처리
-    if hasattr(webview, 'FileDialog'):
-        return webview.FileDialog.OPEN if kind == 'open' else webview.FileDialog.SAVE
-    return webview.OPEN_DIALOG if kind == 'open' else webview.SAVE_DIALOG
-
-
 class AuditorAPI:
     def __init__(self):
         self.work_dir = tempfile.mkdtemp(prefix="gmp_auditor_")
         self.docs = {}
 
-    def select_files(self):
-        try:
-            window = webview.windows[0]
-            file_types = ('PDF Files (*.pdf)', 'All files (*.*)')
-            paths = window.create_file_dialog(
-                _get_dialog_type('open'),
-                allow_multiple=True,
-                file_types=file_types
-            )
-            if not paths:
-                return []
-            return [self._register_pdf(p) for p in paths]
-        except Exception as e:
-            return {'error': str(e)}
+    def ping(self):
+        return {'ok': True, 'hasOcr': HAS_OCR}
 
     def load_dropped_file(self, filename: str, b64_data: str):
         try:
@@ -301,7 +281,7 @@ class AuditorAPI:
             'height': pix.height
         }
 
-    def _build_annotated_pdf(self, doc_id: str, findings: list, cutoff_date: str, out_path: str):
+    def _build_annotated_pdf_bytes(self, doc_id: str, findings: list, cutoff_date: str) -> bytes:
         info = self.docs[doc_id]
         pdf = fitz.open(info['path'])
         active = [f for f in findings if not f.get('excluded', False)]
@@ -333,53 +313,44 @@ class AuditorAPI:
             )
             annot.update()
 
-        pdf.save(out_path, garbage=3, deflate=True)
+        data = pdf.tobytes(garbage=3, deflate=True)
         pdf.close()
+        return data
 
     def export_single_pdf(self, doc_id: str, findings_json: str, cutoff_date: str):
         if doc_id not in self.docs:
             return {'ok': False, 'msg': '문서를 찾을 수 없습니다.'}
         findings = json.loads(findings_json)
         orig_name = Path(self.docs[doc_id]['name']).stem
-        window = webview.windows[0]
-        save_path = window.create_file_dialog(
-            _get_dialog_type('save'),
-            save_filename=f"[DATE_AUDIT]_{orig_name}.pdf",
-            file_types=('PDF Files (*.pdf)',)
-        )
-        if not save_path:
-            return {'ok': False, 'msg': '취소됨'}
-        if isinstance(save_path, (list, tuple)):
-            save_path = save_path[0]
-
-        self._build_annotated_pdf(doc_id, findings, cutoff_date, save_path)
-        return {'ok': True, 'path': save_path}
+        pdf_bytes = self._build_annotated_pdf_bytes(doc_id, findings, cutoff_date)
+        return {
+            'ok': True,
+            'filename': f"[DATE_AUDIT]_{orig_name}.pdf",
+            'b64': base64.b64encode(pdf_bytes).decode('ascii')
+        }
 
     def export_all_zip(self, all_findings_json: str, cutoff_date: str):
         all_map = json.loads(all_findings_json)
-        window = webview.windows[0]
-        save_path = window.create_file_dialog(
-            _get_dialog_type('save'),
-            save_filename=f"GMP_Date_Audit_Report_{cutoff_date}.zip",
-            file_types=('ZIP Archive (*.zip)',)
-        )
-        if not save_path:
-            return {'ok': False, 'msg': '취소됨'}
-        if isinstance(save_path, (list, tuple)):
-            save_path = save_path[0]
-
         tmp_out = tempfile.mkdtemp(prefix="gmp_zip_")
-        with zipfile.ZipFile(save_path, 'w', zipfile.ZIP_DEFLATED) as zf:
+        zip_path = os.path.join(tmp_out, f"GMP_Date_Audit_Report_{cutoff_date}.zip")
+
+        with zipfile.ZipFile(zip_path, 'w', zipfile.ZIP_DEFLATED) as zf:
             for doc_id, findings in all_map.items():
                 if doc_id not in self.docs:
                     continue
                 orig_name = Path(self.docs[doc_id]['name']).stem
-                pdf_out = os.path.join(tmp_out, f"[DATE_AUDIT]_{orig_name}.pdf")
-                self._build_annotated_pdf(doc_id, findings, cutoff_date, pdf_out)
-                zf.write(pdf_out, arcname=os.path.basename(pdf_out))
+                pdf_bytes = self._build_annotated_pdf_bytes(doc_id, findings, cutoff_date)
+                zf.writestr(f"[DATE_AUDIT]_{orig_name}.pdf", pdf_bytes)
 
+        with open(zip_path, 'rb') as f:
+            zip_b64 = base64.b64encode(f.read()).decode('ascii')
         shutil.rmtree(tmp_out, ignore_errors=True)
-        return {'ok': True, 'path': save_path}
+
+        return {
+            'ok': True,
+            'filename': f"GMP_Date_Audit_Report_{cutoff_date}.zip",
+            'b64': zip_b64
+        }
 
 
 def get_resource_path(relative_path: str) -> str:
